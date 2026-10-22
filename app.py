@@ -203,12 +203,62 @@ algorithms = sorted(
     normalized["Algorithm"].dropna().astype(str).unique().tolist()
 )
 
-conditions = sorted(
-    normalized["Environment"].dropna().astype(str).unique().tolist()
+f1, f2 = st.columns(2)
+chosen_algorithms = []
+
+with f1:
+    st.markdown("### Select Algorithms")
+
+    for algorithm in algorithms:
+        if st.checkbox(
+            algorithm,
+            value=True,
+            key=f"modelcheck_fix2_algorithm_{algorithm}"
+        ):
+            chosen_algorithms.append(algorithm)
+
+if not chosen_algorithms:
+    st.warning("Please select at least one algorithm.")
+    st.stop()
+
+# Show only test conditions available for selected algorithms
+available_conditions = sorted(
+    normalized[
+        normalized["Algorithm"].astype(str).isin(chosen_algorithms)
+    ]["Environment"].dropna().astype(str).unique().tolist()
 )
 
-f1, f2 = st.columns(2)
+chosen_conditions = []
 
+with f2:
+    st.markdown("### Select Test Conditions")
+
+    for condition in available_conditions:
+        if st.checkbox(
+            condition,
+            value=True,
+            key=f"modelcheck_fix2_condition_{condition}"
+        ):
+            chosen_conditions.append(condition)
+
+if not chosen_conditions:
+    st.warning("Please select at least one test condition.")
+    st.stop()
+
+# Apply selected filters
+view = normalized[
+    normalized["Algorithm"].astype(str).isin(chosen_algorithms)
+    & normalized["Environment"].astype(str).isin(chosen_conditions)
+].copy()
+
+if view.empty:
+    st.warning(
+        "No matching data found. Please check the uploaded CSV files "
+        "and the standardized data above."
+    )
+    st.stop()
+
+st.success(f"Filters applied successfully: {len(view)} rows selected.")
 # Algorithm selection — visible checkboxes instead of dropdown
 with f1:
     st.markdown("### Select Algorithms")
