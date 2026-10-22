@@ -90,11 +90,28 @@ if X.shape[1] == 0:
 numeric_target = pd.api.types.is_numeric_dtype(y)
 unique_count = y.nunique()
 
-if numeric_target and unique_count > 10:
-    task = "regression"
-else:
-    task = "classification"
+default_task = (
+    "Regression"
+    if numeric_target and unique_count > 10
+    else "Classification"
+)
 
+task_choice = st.selectbox(
+    "Choose prediction type",
+    ["Classification", "Regression"],
+    index=(
+        1 if default_task == "Regression" else 0
+    )
+)
+
+task = task_choice.lower()
+
+if task == "regression" and not numeric_target:
+    st.error(
+        "Regression requires a numeric target column. "
+        "Choose a numeric column or select Classification."
+    )
+    st.stop()
 st.info(
     f"Detected task: **{task.title()}**. "
     f"Target: **{target}**. "
