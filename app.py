@@ -196,15 +196,48 @@ if normalized.empty:
 st.caption("Detected source columns: " + ", ".join(map(str, raw.columns)))
 
 # ----------------------------- Filters ---------------------------------------
+# ----------------------------- Filters ---------------------------------------
 st.subheader("2. Filter and compare")
-algorithms = sorted(normalized["Algorithm"].dropna().astype(str).unique().tolist())
-conditions = sorted(normalized["Environment"].dropna().astype(str).unique().tolist())
-f1, f2 = st.columns(2)
-with f1:
-    chosen_algorithms = st.multiselect("Algorithms", algorithms, default=algorithms)
-with f2:
-    chosen_conditions = st.multiselect("Test conditions", conditions, default=conditions)
 
+algorithms = sorted(
+    normalized["Algorithm"].dropna().astype(str).unique().tolist()
+)
+
+conditions = sorted(
+    normalized["Environment"].dropna().astype(str).unique().tolist()
+)
+
+f1, f2 = st.columns(2)
+
+# Algorithm selection — visible checkboxes instead of dropdown
+with f1:
+    st.markdown("### Select Algorithms")
+    chosen_algorithms = []
+
+    for algorithm in algorithms:
+        selected = st.checkbox(
+            algorithm,
+            value=True,
+            key=f"algorithm_{algorithm}"
+        )
+        if selected:
+            chosen_algorithms.append(algorithm)
+
+# Test-condition selection
+with f2:
+    st.markdown("### Select Test Conditions")
+    chosen_conditions = []
+
+    for condition in conditions:
+        selected = st.checkbox(
+            condition,
+            value=True,
+            key=f"condition_{condition}"
+        )
+        if selected:
+            chosen_conditions.append(condition)
+
+# Apply filters
 view = normalized[
     normalized["Algorithm"].astype(str).isin(chosen_algorithms)
     & normalized["Environment"].astype(str).isin(chosen_conditions)
