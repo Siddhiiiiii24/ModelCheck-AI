@@ -70,12 +70,37 @@ target = st.selectbox(
 )
 
 # Remove rows where target is missing
+
+# ----------------------------- Target and task detection ---------------------
+
+# Convert numeric-looking target values such as 50,000 or ₹50,000
+# into actual numeric values.
+target_text = (
+    df[target]
+    .astype(str)
+    .str.strip()
+    .str.replace(r"[$₹,]", "", regex=True)
+)
+
+converted_target = pd.to_numeric(target_text, errors="coerce")
+
+# Convert the column only if most of its non-empty values are numeric.
+non_empty = df[target].notna()
+if non_empty.any():
+    numeric_ratio = converted_target[non_empty].notna().mean()
+else:
+    numeric_ratio = 0
+
+if numeric_ratio >= 0.80:
+    df[target] = converted_target
+
+# Remove rows with missing target values
 data = df.dropna(subset=[target]).copy()
 
-# Exclude IDs and names from predictors by default
 X = data.drop(columns=[target])
 y = data[target]
 
+# Exclude identifier/text columns that should not be model inputs
 excluded = [
     c for c in X.columns
     if c.strip().lower() in ["id", "name", "source file"]
@@ -83,40 +108,39 @@ excluded = [
 X = X.drop(columns=excluded, errors="ignore")
 
 if X.shape[1] == 0:
-    st.error("No usable input features remain. Select a different target column.")
+    st.error("No usable input features remain. Choose a different target.")
     st.stop()
 
-# Infer task from target data
+# Detect whether the target should be predicted as a number or a class
 numeric_target = pd.api.types.is_numeric_dtype(y)
 unique_count = y.nunique()
 
-default_task = (
-    "Regression"
-    if numeric_target and unique_count > 10
-    else "Classification"
-)
+target_name = target.strip().lower()
+regression_target_names = [
+    "salary", "price", "income", "wage",
+    "performance_score", "age"
+]
 
-task_choice = st.selectbox(
-    "Choose prediction type",
-    ["Classification", "Regression"],
-    index=(
-        1 if default_task == "Regression" else 0
-    )
-)
+if numeric_target and (
+    unique_count > 10
+    or target_name in regression_target_names
+):
+    task = "regression"
+else:
+    task = "classification"
 
-task = task_choice.lower()
+st.success(f"Prediction type: {task.title()}")
+st.write(f"Target column: **{target}**")
+st.write(f"Unique target values: **{unique_count}**")
 
 if task == "regression" and not numeric_target:
-    st.error(
-        "Regression requires a numeric target column. "
-        "Choose a numeric column or select Classification."
-    )
+    st.error("The regression target must contain numeric values.")
     st.stop()
-st.info(
-    f"Detected task: **{task.title()}**. "
-    f"Target: **{target}**. "
-    "Check that this matches your intended prediction task."
-)
+
+if task == "classification" and unique_count < 2:
+    st.error("Classification requires at least two target classes.")
+    st.stop()
+
 
 if task == "classification" and unique_count < 2:
     st.error("Classification needs at least two target classes.")
