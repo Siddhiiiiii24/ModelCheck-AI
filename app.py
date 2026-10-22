@@ -1,449 +1,302 @@
-import io
-from pathlib import Path
 
-import matplotlib.pyplot as plt
+import io
 import pandas as pd
 import streamlit as st
+import matplotlib.pyplot as plt
+
+from sklearn.model_selection import train_test_split
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.impute import SimpleImputer
+from sklearn.metrics import (
+    accuracy_score, balanced_accuracy_score,
+    precision_score, recall_score, f1_score,
+    mean_absolute_error, mean_squared_error, r2_score
+)
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.linear_model import LogisticRegression, LinearRegression
+from sklearn.svm import SVC, SVR
 
 st.set_page_config(
-    page_title="ModelCheck AI | Model Reliability Analyzer",
+    page_title="ModelCheck AI",
     page_icon="📊",
-    layout="wide",
+    layout="wide"
 )
 
-# ----------------------------- Styling ---------------------------------------
-st.markdown("""
-<style>
-.block-container {padding-top: 1.7rem; padding-bottom: 2.5rem;}
-.hero {
-  padding: 1.4rem 1.6rem; border-radius: 18px;
-  background: linear-gradient(120deg, #102a56 0%, #2456a6 100%);
-  color: white; margin-bottom: 1.2rem;
-}
-.hero h1 {color: white; margin: 0; font-size: 2.15rem;}
-.hero p {color: #e6efff; margin: .35rem 0 0 0; font-size: 1.02rem;}
-.small-note {font-size: .9rem; color: #64748b;}
-</style>
-""", unsafe_allow_html=True)
+st.title("📊 ModelCheck AI")
+st.write("Upload a dataset, select algorithms, train models and compare their performance.")
 
-st.markdown("""
-<div class="hero">
-  <h1>📊 ModelCheck AI</h1>
-  <p>Model Reliability Analyzer · Compare validation performance and behavior under data shifts</p>
-</div>
-""", unsafe_allow_html=True)
-
-st.write(
-    "Upload your experiment CSV files to compare machine-learning model configurations, "
-    "inspect performance under different test conditions, and export a combined analysis."
+uploaded = st.file_uploader(
+    "Upload ONE dataset CSV at a time",
+    type=["csv"]
 )
 
-with st.sidebar:
-    st.header("About this project")
-    st.write(
-        "This dashboard supports the research demonstration "
-        "**“Underspecification: Same Validation Score, Different Deployment Behavior.”**"
-    )
-    st.divider()
-    st.subheader("How to use")
-    st.markdown(
-        "1. Upload one or more CSV result files.\\n"
-        "2. Check the detected columns.\\n"
-        "3. Compare model performance and reliability.\\n"
-        "4. Download the combined data and summary."
-    )
-    st.caption("This tool analyzes recorded metrics; it does not retrain models.")
+if uploaded is None:
+    st.info("Upload car_dataset.csv OR toy_dataset.csv to begin.")
+    st.stop()
 
-# ----------------------------- Data loading ----------------------------------
-uploaded_files = st.file_uploader(
-    "Upload experiment result CSV files",
-    type=["csv"],
-    accept_multiple_files=True,
-    help="Upload the CSV results exported by your Logistic Regression/SVM and Decision Tree/Random Forest experiments."
+try:
+    df = pd.read_csv(uploaded)
+except Exception as e:
+    st.error(f"Could not read CSV: {e}")
+    st.stop()
+
+if df.empty or len(df) < 5:
+    st.error("Dataset must contain at least 5 rows.")
+    st.stop()
+
+st.subheader("1. Dataset")
+st.write(f"Rows: {len(df)} | Columns: {len(df.columns)}")
+st.dataframe(df.head(10), use_container_width=True)
+
+# Remove completely empty columns and duplicate rows
+df = df.dropna(axis=1, how="all").drop_duplicates()
+
+# Select target column
+st.subheader("2. Configure experiment")
+
+default_target = (
+    "Price_USD" if "Price_USD" in df.columns
+    else "Performance_Score" if "Performance_Score" in df.columns
+    else df.columns[-1]
 )
 
-def read_csv_upload(upload):
-    try:
-        data = pd.read_csv(upload)
-        if data.empty:
-            st.warning(f"{upload.name} is empty and was skipped.")
-            return None
-        data["Source File"] = upload.name
-        return data
-    except Exception as exc:
-        st.error(f"Could not read {upload.name}: {exc}")
-        return None
-
-def find_column(df, candidates):
-    # Case-insensitive, whitespace-insensitive matching
-    normalized = {str(c).strip().lower().replace("_", " ").replace("-", " "): c for c in df.columns}
-    for candidate in candidates:
-        key = candidate.strip().lower().replace("_", " ").replace("-", " ")
-        if key in normalized:
-            return normalized[key]
-    # allow partial matching for common labels
-    for candidate in candidates:
-        key = candidate.strip().lower().replace("_", " ").replace("-", " ")
-        for norm, original in normalized.items():
-            if key in norm or norm in key:
-                return original
-    return None
-
-def normalize_results(df):
-    """Convert the two project CSV formats and similar tidy CSVs into a common schema."""
-    data = df.copy()
-    algorithm_col = find_column(data, ["Algorithm", "Model", "Classifier"])
-    config_col = find_column(data, ["Configuration", "Config", "Parameters", "Model Configuration"])
-    env_col = find_column(data, ["Environment", "Test Condition", "Condition", "Dataset Type", "Evaluation Set"])
-    val_col = find_column(data, ["Validation Accuracy", "Validation Score", "Val Accuracy", "Validation"])
-    acc_col = find_column(data, ["Accuracy", "Test Accuracy", "Score"])
-    bal_col = find_column(data, ["Balanced Accuracy", "Balanced Acc", "Test Balanced Accuracy"])
-
-    # Support wide-format tables with columns such as Normal Test Accuracy, Noise Test Accuracy.
-    if env_col is None and acc_col is None:
-        possible = []
-        for col in data.columns:
-            name = str(col).lower()
-            if any(term in name for term in ["normal", "noise", "shift"]) and "accuracy" in name:
-                possible.append(col)
-        if possible:
-            id_vars = [c for c in data.columns if c not in possible]
-            data = data.melt(id_vars=id_vars, value_vars=possible, var_name="Environment", value_name="Accuracy")
-            env_col = "Environment"
-            acc_col = "Accuracy"
-            algorithm_col = find_column(data, ["Algorithm", "Model", "Classifier"])
-            config_col = find_column(data, ["Configuration", "Config", "Parameters", "Model Configuration"])
-            val_col = find_column(data, ["Validation Accuracy", "Validation Score", "Val Accuracy", "Validation"])
-            bal_col = find_column(data, ["Balanced Accuracy", "Balanced Acc", "Test Balanced Accuracy"])
-
-    out = pd.DataFrame(index=data.index)
-    out["Algorithm"] = data[algorithm_col].astype(str) if algorithm_col else "Unknown model"
-    out["Configuration"] = data[config_col].astype(str) if config_col else "Default / not specified"
-    out["Environment"] = data[env_col].astype(str) if env_col else "Unspecified condition"
-
-    if val_col:
-        out["Validation Accuracy"] = pd.to_numeric(data[val_col], errors="coerce")
-    else:
-        out["Validation Accuracy"] = pd.NA
-
-    if acc_col:
-        out["Accuracy"] = pd.to_numeric(data[acc_col], errors="coerce")
-    else:
-        out["Accuracy"] = pd.NA
-
-    if bal_col:
-        out["Balanced Accuracy"] = pd.to_numeric(data[bal_col], errors="coerce")
-    else:
-        out["Balanced Accuracy"] = pd.NA
-
-    source_col = find_column(data, ["Source File"])
-    out["Source File"] = data[source_col].astype(str) if source_col else "Uploaded CSV"
-
-    # Standardize common environment labels without changing the original source data.
-    def clean_env(value):
-        v = str(value).strip().lower()
-        if any(t in v for t in ["noise", "gaussian"]):
-            return "Noise Test"
-        if any(t in v for t in ["shift", "distribution"]):
-            return "Feature-Shift Test"
-        if any(t in v for t in ["normal", "id test", "in-distribution", "in distribution", "original"]):
-            return "Normal Test"
-        return str(value).strip()
-    out["Environment"] = out["Environment"].map(clean_env)
-    return out
-
-if not uploaded_files:
-    st.info("Start by uploading your experiment CSV files. The dashboard will populate after a file is uploaded.")
-    st.subheader("Expected data")
-    st.markdown(
-        "- **Algorithm**: Logistic Regression, SVM, Decision Tree, or Random Forest\\n"
-        "- **Configuration**: model settings (if recorded)\\n"
-        "- **Validation Accuracy**: validation score (if recorded)\\n"
-        "- **Environment**: Normal Test, Noise Test, or Feature-Shift Test\\n"
-        "- **Accuracy** and/or **Balanced Accuracy**: recorded metric values"
-    )
-    st.warning(
-        "Use your real experiment CSVs for research conclusions. No experimental result is generated by this empty dashboard."
-    )
-    st.stop()
-
-frames = [read_csv_upload(f) for f in uploaded_files]
-frames = [f for f in frames if f is not None]
-if not frames:
-    st.error("No readable CSV files were found.")
-    st.stop()
-
-raw = pd.concat(frames, ignore_index=True, sort=False)
-normalized = normalize_results(raw)
-normalized = normalized.dropna(how="all", subset=["Validation Accuracy", "Accuracy", "Balanced Accuracy"])
-
-st.subheader("1. Uploaded data")
-c1, c2, c3 = st.columns(3)
-c1.metric("Files uploaded", len(frames))
-c2.metric("Rows loaded", len(raw))
-c3.metric("Models detected", normalized["Algorithm"].nunique() if not normalized.empty else 0)
-
-with st.expander("View original uploaded data", expanded=False):
-    st.dataframe(raw, use_container_width=True, hide_index=True)
-with st.expander("View standardized data used for analysis", expanded=False):
-    st.dataframe(normalized, use_container_width=True, hide_index=True)
-
-if normalized.empty:
-    st.error("No usable metric values were found. Check that the uploaded CSV contains numeric accuracy or validation-accuracy columns.")
-    st.write("Columns detected:", ", ".join(map(str, raw.columns)))
-    st.stop()
-
-st.caption("Detected source columns: " + ", ".join(map(str, raw.columns)))
-
-# ----------------------------- Filters ---------------------------------------
-# ----------------------------- Filters ---------------------------------------
-st.subheader("2. Filter and compare")
-
-algorithms = sorted(
-    normalized["Algorithm"].dropna().astype(str).unique().tolist()
+target = st.selectbox(
+    "Choose the target column (what should the model predict?)",
+    df.columns.tolist(),
+    index=df.columns.tolist().index(default_target)
 )
 
-f1, f2 = st.columns(2)
-chosen_algorithms = []
+# Remove rows where target is missing
+data = df.dropna(subset=[target]).copy()
 
-with f1:
-    st.markdown("### Select Algorithms")
+# Exclude IDs and names from predictors by default
+X = data.drop(columns=[target])
+y = data[target]
 
-    for algorithm in algorithms:
-        if st.checkbox(
-            algorithm,
-            value=True,
-            key=f"modelcheck_fix2_algorithm_{algorithm}"
-        ):
-            chosen_algorithms.append(algorithm)
+excluded = [
+    c for c in X.columns
+    if c.strip().lower() in ["id", "name", "source file"]
+]
+X = X.drop(columns=excluded, errors="ignore")
 
-if not chosen_algorithms:
-    st.warning("Please select at least one algorithm.")
+if X.shape[1] == 0:
+    st.error("No usable input features remain. Select a different target column.")
     st.stop()
 
-# Show only test conditions available for selected algorithms
-available_conditions = sorted(
-    normalized[
-        normalized["Algorithm"].astype(str).isin(chosen_algorithms)
-    ]["Environment"].dropna().astype(str).unique().tolist()
-)
+# Infer task from target data
+numeric_target = pd.api.types.is_numeric_dtype(y)
+unique_count = y.nunique()
 
-chosen_conditions = []
-
-with f2:
-    st.markdown("### Select Test Conditions")
-
-    for condition in available_conditions:
-        if st.checkbox(
-            condition,
-            value=True,
-            key=f"modelcheck_fix2_condition_{condition}"
-        ):
-            chosen_conditions.append(condition)
-
-if not chosen_conditions:
-    st.warning("Please select at least one test condition.")
-    st.stop()
-
-# Apply selected filters
-view = normalized[
-    normalized["Algorithm"].astype(str).isin(chosen_algorithms)
-    & normalized["Environment"].astype(str).isin(chosen_conditions)
-].copy()
-
-if view.empty:
-    st.warning(
-        "No matching data found. Please check the uploaded CSV files "
-        "and the standardized data above."
-    )
-    st.stop()
-
-st.success(f"Filters applied successfully: {len(view)} rows selected.")
-# Algorithm selection — visible checkboxes instead of dropdown
-with f1:
-    st.markdown("### Select Algorithms")
-    chosen_algorithms = []
-
-    for algorithm in algorithms:
-        selected = st.checkbox(
-            algorithm,
-            value=True,
-            key=f"algorithm_{algorithm}"
-        )
-        if selected:
-            chosen_algorithms.append(algorithm)
-
-# Test-condition selection
-with f2:
-    st.markdown("### Select Test Conditions")
-    chosen_conditions = []
-
-    for condition in conditions:
-        selected = st.checkbox(
-            condition,
-            value=True,
-            key=f"condition_{condition}"
-        )
-        if selected:
-            chosen_conditions.append(condition)
-
-# Apply filters
-view = normalized[
-    normalized["Algorithm"].astype(str).isin(chosen_algorithms)
-    & normalized["Environment"].astype(str).isin(chosen_conditions)
-].copy()
-
-if view.empty:
-    st.warning("No rows match the selected filters. Choose at least one algorithm and one test condition.")
-    st.stop()
-
-metric = "Balanced Accuracy" if view["Balanced Accuracy"].notna().any() else "Accuracy"
-if not view[metric].notna().any():
-    st.warning("The selected rows do not contain numeric Accuracy or Balanced Accuracy values.")
-    st.stop()
-
-st.caption(f"Primary metric for environment comparisons: **{metric}**. Validation accuracy is shown separately where available.")
-
-# Convert 0..1 metrics to percentages for display only; retain raw values in downloads.
-def as_percent(series):
-    vals = pd.to_numeric(series, errors="coerce")
-    if vals.notna().any() and vals.max(skipna=True) <= 1.0:
-        return vals * 100
-    return vals
-
-view["Metric Display (%)"] = as_percent(view[metric])
-view["Validation Display (%)"] = as_percent(view["Validation Accuracy"])
-
-# ----------------------------- Summary metrics -------------------------------
-normal_rows = view[view["Environment"] == "Normal Test"]
-normal_mean = normal_rows["Metric Display (%)"].mean()
-all_mean = view["Metric Display (%)"].mean()
-val_mean = view["Validation Display (%)"].mean()
-
-m1, m2, m3 = st.columns(3)
-m1.metric("Mean validation score", f"{val_mean:.2f}%" if pd.notna(val_mean) else "Not available")
-m2.metric("Mean normal-test score", f"{normal_mean:.2f}%" if pd.notna(normal_mean) else "Not available")
-m3.metric("Mean selected-condition score", f"{all_mean:.2f}%" if pd.notna(all_mean) else "Not available")
-
-# ----------------------------- Graphs ----------------------------------------
-st.subheader("3. Performance graphs")
-left, right = st.columns(2)
-
-with left:
-    st.markdown("**Mean performance by algorithm and condition**")
-    plot_data = view.dropna(subset=["Metric Display (%)"]).groupby(["Algorithm", "Environment"], as_index=False)["Metric Display (%)"].mean()
-    if not plot_data.empty:
-        pivot = plot_data.pivot(index="Algorithm", columns="Environment", values="Metric Display (%)")
-        fig, ax = plt.subplots(figsize=(8, 4.8))
-        pivot.plot(kind="bar", ax=ax)
-        ax.set_ylabel(f"{metric} (%)")
-        ax.set_xlabel("")
-        ax.set_ylim(0, max(100, float(pivot.max().max()) * 1.08))
-        ax.tick_params(axis="x", rotation=25)
-        ax.grid(axis="y", alpha=0.25)
-        ax.legend(title="Condition", bbox_to_anchor=(1.02, 1), loc="upper left")
-        fig.tight_layout()
-        st.pyplot(fig, use_container_width=True)
-        plt.close(fig)
-    else:
-        st.info("Not enough numeric values to draw the comparison chart.")
-
-with right:
-    st.markdown("**Validation score by algorithm**")
-    val_data = view.dropna(subset=["Validation Display (%)"]).groupby("Algorithm", as_index=False)["Validation Display (%)"].mean()
-    if not val_data.empty:
-        fig, ax = plt.subplots(figsize=(8, 4.8))
-        ax.bar(val_data["Algorithm"], val_data["Validation Display (%)"])
-        ax.set_ylabel("Validation accuracy (%)")
-        ax.set_ylim(0, max(100, float(val_data["Validation Display (%)"].max()) * 1.08))
-        ax.tick_params(axis="x", rotation=25)
-        ax.grid(axis="y", alpha=0.25)
-        fig.tight_layout()
-        st.pyplot(fig, use_container_width=True)
-        plt.close(fig)
-    else:
-        st.info("Validation accuracy was not available in the uploaded files.")
-
-# ----------------------------- Reliability analysis --------------------------
-st.subheader("4. Reliability analysis")
-st.write(
-    "The dashboard compares recorded test scores with normal-test performance. "
-    "A larger decrease under an altered condition can indicate sensitivity to that particular synthetic test. "
-    "It does not, by itself, prove why a model changed."
-)
-
-grouped = view.dropna(subset=["Metric Display (%)"]).groupby(["Algorithm", "Configuration", "Environment"], as_index=False)["Metric Display (%)"].mean()
-normal_lookup = grouped[grouped["Environment"] == "Normal Test"][["Algorithm", "Configuration", "Metric Display (%)"]].rename(columns={"Metric Display (%)": "Normal Test (%)"})
-if not normal_lookup.empty:
-    analysis = grouped.merge(normal_lookup, on=["Algorithm", "Configuration"], how="left")
-    analysis["Performance change (percentage points)"] = analysis["Metric Display (%)"] - analysis["Normal Test (%)"]
-    analysis["Performance drop (percentage points)"] = -analysis["Performance change (percentage points)"]
-    analysis = analysis[analysis["Environment"] != "Normal Test"].copy()
-    if not analysis.empty:
-        def interpretation(row):
-            drop = row["Performance drop (percentage points)"]
-            if pd.isna(drop):
-                return "Normal-test baseline unavailable"
-            if drop > 5:
-                return "Larger drop in this test"
-            if drop > 0:
-                return "Small drop in this test"
-            if drop < 0:
-                return "Score increased in this test"
-            return "No observed change"
-        analysis["Observation"] = analysis.apply(interpretation, axis=1)
-        st.dataframe(
-            analysis[["Algorithm", "Configuration", "Environment", "Normal Test (%)", "Metric Display (%)",
-                      "Performance change (percentage points)", "Observation"]],
-            use_container_width=True, hide_index=True
-        )
-        st.caption("The 5-percentage-point label is a descriptive threshold for this dashboard, not a universal scientific standard.")
-    else:
-        st.info("No altered test conditions were found alongside a normal-test baseline.")
+if numeric_target and unique_count > 10:
+    task = "regression"
 else:
-    st.info("A normal-test baseline was not detected. Rename the relevant environment to include 'Normal' or check the source CSV format.")
+    task = "classification"
 
-# Validation similarity / variation analysis
-st.markdown("**Validation scores and test-score variation**")
-variation = view.dropna(subset=["Metric Display (%)"]).groupby(["Algorithm", "Configuration"], as_index=False).agg(
-    Mean_test_score=("Metric Display (%)", "mean"),
-    Lowest_test_score=("Metric Display (%)", "min"),
-    Highest_test_score=("Metric Display (%)", "max"),
-    Conditions_tested=("Environment", "nunique"),
+st.info(
+    f"Detected task: **{task.title()}**. "
+    f"Target: **{target}**. "
+    "Check that this matches your intended prediction task."
 )
-variation["Observed score range (percentage points)"] = variation["Highest_test_score"] - variation["Lowest_test_score"]
-val_per_config = view.dropna(subset=["Validation Display (%)"]).groupby(["Algorithm", "Configuration"], as_index=False)["Validation Display (%)"].mean()
-variation = variation.merge(val_per_config, on=["Algorithm", "Configuration"], how="left")
-variation = variation.rename(columns={"Validation Display (%)": "Validation score (%)"})
-st.dataframe(variation, use_container_width=True, hide_index=True)
 
-st.subheader("5. Download results")
-download_col1, download_col2 = st.columns(2)
-with download_col1:
-    combined_bytes = raw.to_csv(index=False).encode("utf-8-sig")
-    st.download_button(
-        "⬇️ Download combined uploaded data",
-        data=combined_bytes,
-        file_name="modelcheck_combined_results.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
-with download_col2:
-    summary_bytes = variation.to_csv(index=False).encode("utf-8-sig")
-    st.download_button(
-        "⬇️ Download model summary",
-        data=summary_bytes,
-        file_name="modelcheck_model_summary.csv",
-        mime="text/csv",
-        use_container_width=True,
+if task == "classification" and unique_count < 2:
+    st.error("Classification needs at least two target classes.")
+    st.stop()
+
+if len(data) < 10:
+    st.warning("This dataset is very small. Scores may be unstable.")
+
+if task == "classification" and y.value_counts().min() < 2:
+    st.warning(
+        "At least one class has fewer than 2 rows. "
+        "A reliable stratified split may not be possible."
     )
 
-st.divider()
-st.subheader("About the analysis")
-st.markdown("""
-- The app analyzes **recorded metrics** from uploaded CSV files; it does not train or alter models.
-- It can show performance differences across recorded conditions, but cannot identify individual misclassified samples unless row-level true labels and predictions are provided.
-- Synthetic noise and feature shifts are simplified demonstrations, not proof of real-world deployment behavior.
-- Use the same split and evaluation protocol when comparing algorithms. Do not use the test set repeatedly to tune models.
-""")
-st.caption("ModelCheck AI · Research demonstration · Built with Streamlit, pandas and Matplotlib")
+if task == "classification":
+    models = {
+        "Decision Tree": DecisionTreeClassifier(random_state=42),
+        "Random Forest": RandomForestClassifier(
+            n_estimators=100, random_state=42
+        ),
+        "Logistic Regression": LogisticRegression(max_iter=2000),
+        "SVM": SVC()
+    }
+else:
+    models = {
+        "Decision Tree": DecisionTreeRegressor(random_state=42),
+        "Random Forest": RandomForestRegressor(
+            n_estimators=100, random_state=42
+        ),
+        "Linear Regression": LinearRegression(),
+        "SVR": SVR()
+    }
+
+selected = st.multiselect(
+    "Choose algorithms to train and compare",
+    options=list(models.keys()),
+    default=list(models.keys()),
+    key="algorithm_selection"
+)
+
+test_size = st.slider(
+    "Test data percentage",
+    min_value=20,
+    max_value=40,
+    value=20,
+    step=5
+)
+
+run = st.button("🚀 Train and Compare Models", type="primary")
+
+if run:
+    if not selected:
+        st.error("Select at least one algorithm.")
+        st.stop()
+
+    stratify = None
+    if task == "classification":
+        counts = y.value_counts()
+        if len(counts) >= 2 and counts.min() >= 2:
+            stratify = y
+
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y,
+            test_size=test_size / 100,
+            random_state=42,
+            stratify=stratify
+        )
+    except Exception as e:
+        st.error(f"Could not split dataset: {e}")
+        st.stop()
+
+    numeric_cols = X.select_dtypes(include="number").columns.tolist()
+    categorical_cols = X.select_dtypes(exclude="number").columns.tolist()
+
+    numeric_pipe = Pipeline([
+        ("imputer", SimpleImputer(strategy="median")),
+        ("scaler", StandardScaler())
+    ])
+
+    categorical_pipe = Pipeline([
+        ("imputer", SimpleImputer(strategy="most_frequent")),
+        ("encoder", OneHotEncoder(handle_unknown="ignore"))
+    ])
+
+    transformers = []
+    if numeric_cols:
+        transformers.append(("numeric", numeric_pipe, numeric_cols))
+    if categorical_cols:
+        transformers.append(("categorical", categorical_pipe, categorical_cols))
+
+    preprocessor = ColumnTransformer(transformers=transformers)
+
+    results = []
+    predictions = pd.DataFrame(index=y_test.index)
+    fitted_models = {}
+
+    progress = st.progress(0)
+    status = st.empty()
+
+    for i, name in enumerate(selected):
+        status.write(f"Training {name}...")
+
+        pipeline = Pipeline([
+            ("preprocessing", preprocessor),
+            ("model", models[name])
+        ])
+
+        try:
+            pipeline.fit(X_train, y_train)
+            pred = pipeline.predict(X_test)
+            fitted_models[name] = pipeline
+            predictions[name] = pred
+
+            if task == "classification":
+                results.append({
+                    "Algorithm": name,
+                    "Accuracy": accuracy_score(y_test, pred),
+                    "Balanced Accuracy": balanced_accuracy_score(y_test, pred),
+                    "Precision (weighted)": precision_score(
+                        y_test, pred, average="weighted", zero_division=0
+                    ),
+                    "Recall (weighted)": recall_score(
+                        y_test, pred, average="weighted", zero_division=0
+                    ),
+                    "F1 Score (weighted)": f1_score(
+                        y_test, pred, average="weighted", zero_division=0
+                    )
+                })
+            else:
+                results.append({
+                    "Algorithm": name,
+                    "MAE": mean_absolute_error(y_test, pred),
+                    "RMSE": mean_squared_error(y_test, pred) ** 0.5,
+                    "R2 Score": r2_score(y_test, pred)
+                })
+
+        except Exception as e:
+            st.warning(f"{name} failed: {e}")
+
+        progress.progress((i + 1) / len(selected))
+
+    status.empty()
+
+    if not results:
+        st.error("No models trained successfully. Check your target and dataset.")
+        st.stop()
+
+    result_df = pd.DataFrame(results)
+
+    st.subheader("3. Model comparison")
+    st.dataframe(result_df, use_container_width=True)
+
+    if task == "classification":
+        chart_metric = "Accuracy"
+        chart_data = result_df.set_index("Algorithm")[chart_metric] * 100
+        ylabel = "Accuracy (%)"
+    else:
+        chart_metric = "RMSE"
+        chart_data = result_df.set_index("Algorithm")[chart_metric]
+        ylabel = "RMSE (lower is better)"
+
+    fig, ax = plt.subplots(figsize=(9, 4))
+    chart_data.plot(kind="bar", ax=ax)
+    ax.set_ylabel(ylabel)
+    ax.set_xlabel("")
+    ax.tick_params(axis="x", rotation=20)
+    ax.grid(axis="y", alpha=0.25)
+    fig.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+
+    st.subheader("4. Individual predictions")
+    comparison = pd.DataFrame({
+        "Actual": y_test,
+    })
+    for name in predictions.columns:
+        comparison[f"{name} Prediction"] = predictions[name]
+
+    st.dataframe(comparison, use_container_width=True)
+
+    st.subheader("5. Download results")
+    st.download_button(
+        "⬇️ Download metrics CSV",
+        data=result_df.to_csv(index=False).encode("utf-8-sig"),
+        file_name="modelcheck_metrics.csv",
+        mime="text/csv"
+    )
+
+    st.download_button(
+        "⬇️ Download sample predictions CSV",
+        data=comparison.to_csv(index=True).encode("utf-8-sig"),
+        file_name="modelcheck_predictions.csv",
+        mime="text/csv"
+    )
+
+    st.caption(
+        "Models are trained on the uploaded dataset using a fixed random split. "
+        "Results depend on the dataset, selected target and split."
+    )
