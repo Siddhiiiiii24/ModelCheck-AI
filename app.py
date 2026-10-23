@@ -209,15 +209,24 @@ else:
     else:
         task_type = "Regression"
 
-task_choice = st.radio(
-    "Machine-learning task",
-    ["Auto-detect", "Classification", "Regression"],
-    index=0,
-    horizontal=True,
-)
 
-if task_choice != "Auto-detect":
-    task_type = task_choice
+# Fully automatic task detection
+if (
+    pd.api.types.is_object_dtype(y)
+    or isinstance(y.dtype, pd.CategoricalDtype)
+    or pd.api.types.is_bool_dtype(y)
+):
+    task_type = "Classification"
+else:
+    unique_count = y.nunique(dropna=True)
+    total_count = len(y)
+
+    if unique_count <= 10:
+        task_type = "Classification"
+    else:
+        task_type = "Regression"
+
+st.success(f"Automatically detected task: {task_type}")
 
 if task_type == "Classification":
     y = y.astype(str)
