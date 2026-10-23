@@ -42,42 +42,63 @@ st.write(
 # 1. TASK DETECTION
 # --------------------------------------------------
 
-def detect_task(y, target_name, choice):
+
+def detect_task(y, target_name, choice="Automatic"):
     if choice != "Automatic":
         return choice
 
-    name = str(target_name).lower()
+    name = str(target_name).strip().lower()
+    values = y.dropna()
+
+    if values.empty:
+        raise ValueError("Target column has no valid values.")
 
     regression_words = [
         "price", "salary", "score", "performance",
         "temperature", "amount", "revenue", "sales",
         "weight", "height", "age", "energy", "power",
-        "voltage", "current", "distance", "measurement"
+        "voltage", "current", "distance", "measurement",
+        "profit", "cost", "income", "duration"
+    ]
+
+    classification_words = [
+        "class", "category", "species", "label",
+        "outcome", "diagnosis", "type", "status",
+        "churn", "survived", "approved"
     ]
 
     if any(word in name for word in regression_words):
         return "Regression"
 
-    if (
-        pd.api.types.is_object_dtype(y)
-        or isinstance(y.dtype, pd.CategoricalDtype)
-        or pd.api.types.is_bool_dtype(y)
-    ):
-        return "Classification"
-
-    values = pd.to_numeric(y, errors="coerce").dropna()
-
-    if values.nunique() == 2 and set(values.unique()).issubset({0, 1}):
+    if any(word in name for word in classification_words):
         return "Classification"
 
     if (
-        pd.api.types.is_integer_dtype(values)
-        and values.nunique() <= 10
-        and values.nunique() / max(len(values), 1) <= 0.05
+        pd.api.types.is_object_dtype(values)
+        or isinstance(values.dtype, pd.CategoricalDtype)
+        or pd.api.types.is_bool_dtype(values)
     ):
+        return "Classification"
+
+    numeric = pd.to_numeric(values, errors="coerce").dropna()
+
+    if numeric.empty:
+        return "Classification"
+
+    unique_count = numeric.nunique()
+    unique_ratio = unique_count / len(numeric)
+
+    if unique_count > 10 or unique_ratio > 0.05:
+        return "Regression"
+
+    if unique_count == 2:
+        return "Classification"
+
+    if pd.api.types.is_integer_dtype(numeric):
         return "Classification"
 
     return "Regression"
+
 
 
 # --------------------------------------------------
@@ -622,67 +643,103 @@ else:
     st.info("Enable Normal to compare results against the baseline.")
 
 
+
 # --------------------------------------------------
 # 13. PREDICTIONS AND DOWNLOADS
 # --------------------------------------------------
 
 st.subheader("Predictions")
 
-with st.expander("Normal-condition predictions"):
-    st.dataframe(
-        predictions_df[predictions_df["Condition"] == "Normal"],
-        use_container_width=True,
-        hide_index=True
-    )
+# Normal-condition predictions
+normal_predictions = predictions_df[
+    predictions_df["Condition"] == "Normal"
+].copy()
 
-with st.expander("All-condition predictions"):
-    st.dataframe(
-        predictions_df,
-        use_container_width=True,
-        hide_index=True
-    )
+with st.expander("Normal-condition predictions", expanded=True):
+    if not normal_predictions.empty:
+        st.dataframe(
+            normal_predictions,
+            use_container_width=True,
+            hide_index=True
+        )
+        st.download_button(
+            label="Download Normal Predictions CSV",
+            data=normal_predictions.to_csv(index=False).encode("utf-8"),
+            file_name="modelcheck_normal_predictions.csv",
+            mime="text/csv",
+            key="download_normal_predictions"
+        )
+    else:
+        st.warning(
+            "Normal predictions are not available. "
+            "Enable the Normal condition and run the comparison again."
+        )
+
+# Predictions for all selected conditions
+with st.expander("All-condition predictions", expanded=True):
+    if not predictions_df.empty:
+        st.dataframe(
+            predictions_df,
+            use_container_width=True,
+            hide_index=True
+        )
+    else:
+        st.warning("No predictions are available yet.")
+
+# --------------------------------------------------
+# DOWNLOAD RESULTS
+# --------------------------------------------------
 
 st.subheader("Download Results")
 
-st.download_button(
-    "Download Metrics CSV",
-    metrics_df.to_csv(index=False).encode("utf-8"),
-    file_name="modelcheck_metrics.csv",
-    mime="text/csv"
-)
+col1, col2 = st.columns(2)
 
-st.download_button(
-    "Download Predictions CSV",
-    predictions_df.to_csv(index=False).encode("utf-8"),
-    file_name="modelcheck_predictions.csv",
-    mime="text/csv"
-)
+with col1:
+    st.download_button(
+        label="Download Metrics CSV",
+        data=metrics_df.to_csv(index=False).encode("utf-8"),
+        file_name="modelcheck_metrics.csv",
+        mime="text/csv",
+        key="download_metrics"
+    )
+
+with col2:
+    st.download_button(
+        label="Download All Predictions CSV",
+        data=predictions_df.to_csv(index=False).encode("utf-8"),
+        file_name="modelcheck_predictions.csv",
+        mime="text/csv",
+        key="download_all_predictions"
+    )
 
 if not changes_df.empty:
     st.download_button(
-        "Download Reliability Changes CSV",
-        changes_df.to_csv(index=False).encode("utf-8"),
+        label="Download Reliability Analysis CSV",
+        data=changes_df.to_csv(index=False).encode("utf-8"),
         file_name="modelcheck_reliability_changes.csv",
-        mime="text/csv"
+        mime="text/csv",
+        key="download_reliability"
     )
 
 st.download_button(
-    "Download Comparison Graph PNG",
-    graph_bytes.getvalue(),
-    file_name="modelcheck_graph.png",
-    mime="image/png"
+    label="Download Comparison Graph PNG",
+    data=graph_bytes.getvalue(),
+    file_name="modelcheck_comparison_graph.png",
+    mime="image/png",
+    key="download_graph"
 )
 
 if not errors_df.empty:
     st.download_button(
-        "Download Algorithm Errors CSV",
-        errors_df.to_csv(index=False).encode("utf-8"),
+        label="Download Algorithm Errors CSV",
+        data=errors_df.to_csv(index=False).encode("utf-8"),
         file_name="modelcheck_errors.csv",
-        mime="text/csv"
+        mime="text/csv",
+        key="download_errors"
     )
 
 st.caption(
-    "Normal evaluates untouched test data. Noise adds random variation to "
-    "numeric features. Feature-Shift moves one selected numeric feature. "
-    "Automatic task detection is a heuristic; select the task manually when needed."
+    "Normal evaluates the original test data. Noise adds random variation "
+    "to numeric features. Feature-Shift shifts one selected numeric feature. "
+    "For a valid Normal prediction table, enable Normal and rerun the experiment."
 )
