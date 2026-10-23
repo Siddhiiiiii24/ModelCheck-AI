@@ -1,6 +1,7 @@
 
 import io
 import pandas as pd
+import numpy as np
 import streamlit as st
 import matplotlib.pyplot as plt
 
@@ -19,6 +20,9 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from sklearn.linear_model import LogisticRegression, LinearRegression
 from sklearn.svm import SVC, SVR
 
+
+# ======================== PAGE CONFIGURATION ========================
+
 st.set_page_config(
     page_title="ModelCheck AI",
     page_icon="📊",
@@ -26,7 +30,10 @@ st.set_page_config(
 )
 
 st.title("📊 ModelCheck AI")
-st.write("Upload a dataset, select algorithms, train models and compare their performance.")
+st.write(
+    "Upload a dataset, train multiple algorithms and compare "
+    "their performance under Normal, Noise and Feature-Shift conditions."
+)
 
 uploaded = st.file_uploader(
     "Upload ONE dataset CSV at a time",
@@ -51,11 +58,17 @@ st.subheader("1. Dataset")
 st.write(f"Rows: {len(df)} | Columns: {len(df.columns)}")
 st.dataframe(df.head(10), use_container_width=True)
 
-# Remove completely empty columns and duplicate rows
+# Preserve original cleaning functionality
 df = df.dropna(axis=1, how="all").drop_duplicates()
 
-# Select target column
-st.subheader("2. Configure experiment")
+if len(df) < 5 or len(df.columns) < 2:
+    st.error("Dataset needs at least 5 rows and a target plus one feature.")
+    st.stop()
+
+
+# ======================== TARGET SELECTION ========================
+
+st.subheader("2. Configure Experiment")
 
 default_target = (
     "Price_USD" if "Price_USD" in df.columns
@@ -64,17 +77,12 @@ default_target = (
 )
 
 target = st.selectbox(
-    "Choose the target column (what should the model predict?)",
+    "Choose the target column",
     df.columns.tolist(),
     index=df.columns.tolist().index(default_target)
 )
 
-# Remove rows where target is missing
-
-# ----------------------------- Target and task detection ---------------------
-
-# Convert numeric-looking target values such as 50,000 or ₹50,000
-# into actual numeric values.
+# Convert numeric-looking target values such as ₹50,000
 target_text = (
     df[target]
     .astype(str)
@@ -83,24 +91,22 @@ target_text = (
 )
 
 converted_target = pd.to_numeric(target_text, errors="coerce")
-
-# Convert the column only if most of its non-empty values are numeric.
 non_empty = df[target].notna()
-if non_empty.any():
-    numeric_ratio = converted_target[non_empty].notna().mean()
-else:
-    numeric_ratio = 0
+
+numeric_ratio = (
+    converted_target[non_empty].notna().mean()
+    if non_empty.any() else 0
+)
 
 if numeric_ratio >= 0.80:
     df[target] = converted_target
 
-# Remove rows with missing target values
 data = df.dropna(subset=[target]).copy()
 
 X = data.drop(columns=[target])
 y = data[target]
 
-# Exclude identifier/text columns that should not be model inputs
+# Preserve original excluded-column logic
 excluded = [
     c for c in X.columns
     if c.strip().lower() in ["id", "name", "source file"]
@@ -108,22 +114,24 @@ excluded = [
 X = X.drop(columns=excluded, errors="ignore")
 
 if X.shape[1] == 0:
-    st.error("No usable input features remain. Choose a different target.")
+    st.error("No usable input features remain.")
     st.stop()
 
-# Detect whether the target should be predicted as a number or a class
+if y.nunique() < 2:
+    st.error("The target must contain at least two different values.")
+    st.stop()
+
 numeric_target = pd.api.types.is_numeric_dtype(y)
 unique_count = y.nunique()
-
 target_name = target.strip().lower()
-regression_target_names = [
+
+regression_names = [
     "salary", "price", "income", "wage",
     "performance_score", "age"
 ]
 
 if numeric_target and (
-    unique_count > 10
-    or target_name in regression_target_names
+    unique_count > 10 or target_name in regression_names
 ):
     task = "regression"
 else:
@@ -133,27 +141,17 @@ st.success(f"Prediction type: {task.title()}")
 st.write(f"Target column: **{target}**")
 st.write(f"Unique target values: **{unique_count}**")
 
-if task == "regression" and not numeric_target:
-    st.error("The regression target must contain numeric values.")
-    st.stop()
-
-if task == "classification" and unique_count < 2:
-    st.error("Classification requires at least two target classes.")
-    st.stop()
-
-
-if task == "classification" and unique_count < 2:
-    st.error("Classification needs at least two target classes.")
-    st.stop()
-
-if len(data) < 10:
-    st.warning("This dataset is very small. Scores may be unstable.")
-
 if task == "classification" and y.value_counts().min() < 2:
     st.warning(
-        "At least one class has fewer than 2 rows. "
-        "A reliable stratified split may not be possible."
+        "At least one class has fewer than 2 samples. "
+        "The train/test split may be unstable."
     )
+
+if len(data) < 10:
+    st.warning("This is a small dataset. Scores may be unstable.")
+
+
+# ======================== FOUR ALGORITHMS ========================
 
 if task == "classification":
     models = {
@@ -189,33 +187,59 @@ test_size = st.slider(
     step=5
 )
 
-run = st.button("🚀 Train and Compare Models", type="primary")
 
-if run:
-    if not selected:
-        st.error("Select at least one algorithm.")
-        st.stop()
+# ======================== NOISE AND FEATURE SHIFT ========================
 
-    stratify = None
-    if task == "classification":
-        counts = y.value_counts()
-        if len(counts) >= 2 and counts.min() >= 2:
-            stratify = y
+st.subheader("3. Robustness Testing")
 
-    try:
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y,
-            test_size=test_size / 100,
-            random_state=42,
-            stratify=stratify
-        )
-    except Exception as e:
-        st.error(f"Could not split dataset: {e}")
-        st.stop()
+st.write(
+    "Compare models on the same test rows under Normal, Noise "
+    "and Feature-Shift conditions."
+)
 
-    numeric_cols = X.select_dtypes(include="number").columns.tolist()
-    categorical_cols = X.select_dtypes(exclude="number").columns.tolist()
+numeric_features = X.select_dtypes(include="number").columns.tolist()
 
+col1, col2 = st.columns(2)
+
+with col1:
+    noise_strength = st.slider(
+        "Noise strength (standard deviations)",
+        min_value=0.0,
+        max_value=1.0,
+        value=0.2,
+        step=0.1
+    )
+
+with col2:
+    shift_strength = st.slider(
+        "Feature-Shift strength (standard deviations)",
+        min_value=0.0,
+        max_value=3.0,
+        value=1.0,
+        step=0.5
+    )
+
+if numeric_features:
+    shift_feature = st.selectbox(
+        "Select feature for Feature-Shift",
+        numeric_features
+    )
+else:
+    shift_feature = None
+    st.warning(
+        "No numeric input features found. Numeric perturbations "
+        "cannot be applied to this dataset."
+    )
+
+run = st.button(
+    "🚀 Train and Compare Models",
+    type="primary"
+)
+
+
+# ======================== PREPROCESSING FUNCTION ========================
+
+def build_preprocessor(numeric_cols, categorical_cols):
     numeric_pipe = Pipeline([
         ("imputer", SimpleImputer(strategy="median")),
         ("scaler", StandardScaler())
@@ -227,56 +251,187 @@ if run:
     ])
 
     transformers = []
+
     if numeric_cols:
-        transformers.append(("numeric", numeric_pipe, numeric_cols))
+        transformers.append(
+            ("numeric", numeric_pipe, numeric_cols)
+        )
+
     if categorical_cols:
-        transformers.append(("categorical", categorical_pipe, categorical_cols))
+        transformers.append(
+            ("categorical", categorical_pipe, categorical_cols)
+        )
 
-    preprocessor = ColumnTransformer(transformers=transformers)
+    return ColumnTransformer(transformers=transformers)
 
-    results = []
-    predictions = pd.DataFrame(index=y_test.index)
-    fitted_models = {}
+
+# ======================== METRICS FUNCTION ========================
+
+def calculate_metrics(y_true, y_pred, task_type):
+
+    if task_type == "classification":
+        return {
+            "Accuracy": accuracy_score(y_true, y_pred),
+            "Balanced Accuracy": balanced_accuracy_score(
+                y_true, y_pred
+            ),
+            "Precision (weighted)": precision_score(
+                y_true, y_pred,
+                average="weighted",
+                zero_division=0
+            ),
+            "Recall (weighted)": recall_score(
+                y_true, y_pred,
+                average="weighted",
+                zero_division=0
+            ),
+            "F1 Score (weighted)": f1_score(
+                y_true, y_pred,
+                average="weighted",
+                zero_division=0
+            )
+        }
+
+    return {
+        "MAE": mean_absolute_error(y_true, y_pred),
+        "RMSE": mean_squared_error(y_true, y_pred) ** 0.5,
+        "R2 Score": r2_score(y_true, y_pred)
+    }
+
+
+def csv_bytes(frame, index=False):
+    return frame.to_csv(index=index).encode("utf-8-sig")
+
+
+# ======================== RUN EXPERIMENT ========================
+
+if run:
+
+    if not selected:
+        st.error("Please select at least one algorithm.")
+        st.stop()
+
+    stratify = None
+
+    if task == "classification":
+        counts = y.value_counts()
+
+        if len(counts) >= 2 and counts.min() >= 2:
+            stratify = y
+
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X,
+            y,
+            test_size=test_size / 100,
+            random_state=42,
+            stratify=stratify
+        )
+    except Exception as e:
+        st.error(f"Could not split dataset: {e}")
+        st.stop()
+
+    numeric_cols = X.select_dtypes(include="number").columns.tolist()
+    categorical_cols = X.select_dtypes(
+        exclude="number"
+    ).columns.tolist()
+
+    # Use training-set statistics only
+    train_std = (
+        X_train[numeric_cols].std(numeric_only=True)
+        if numeric_cols else pd.Series(dtype=float)
+    )
+
+    # Three versions of the same test dataset
+    X_normal = X_test.copy()
+    X_noise = X_test.copy()
+    X_shift = X_test.copy()
+
+    # Add reproducible Gaussian noise to numeric input features
+    rng = np.random.default_rng(42)
+
+    for col in numeric_cols:
+        scale = train_std.get(col, 0)
+
+        if pd.notna(scale) and scale > 0 and noise_strength > 0:
+            valid = X_noise[col].notna()
+            noise = rng.normal(
+                0,
+                noise_strength * scale,
+                size=len(X_noise)
+            )
+
+            X_noise.loc[valid, col] = (
+                X_noise.loc[valid, col].astype(float)
+                + noise[valid.to_numpy()]
+            )
+
+    # Shift one selected numeric feature
+    if shift_feature is not None and shift_strength > 0:
+        scale = train_std.get(shift_feature, 0)
+
+        if pd.notna(scale) and scale > 0:
+            valid = X_shift[shift_feature].notna()
+
+            X_shift.loc[valid, shift_feature] = (
+                X_shift.loc[valid, shift_feature].astype(float)
+                + shift_strength * scale
+            )
+
+    conditions = {
+        "Normal": X_normal,
+        "Noise": X_noise,
+        "Feature-Shift": X_shift
+    }
+
+    all_results = []
+    all_predictions = []
+    normal_predictions = pd.DataFrame(index=y_test.index)
 
     progress = st.progress(0)
     status = st.empty()
 
     for i, name in enumerate(selected):
+
         status.write(f"Training {name}...")
 
-        pipeline = Pipeline([
-            ("preprocessing", preprocessor),
-            ("model", models[name])
-        ])
-
         try:
-            pipeline.fit(X_train, y_train)
-            pred = pipeline.predict(X_test)
-            fitted_models[name] = pipeline
-            predictions[name] = pred
+            pipeline = Pipeline([
+                (
+                    "preprocessing",
+                    build_preprocessor(numeric_cols, categorical_cols)
+                ),
+                ("model", models[name])
+            ])
 
-            if task == "classification":
-                results.append({
+            # Fit only on training data
+            pipeline.fit(X_train, y_train)
+
+            # Evaluate same fitted model under all conditions
+            for condition_name, X_condition in conditions.items():
+
+                pred = pipeline.predict(X_condition)
+
+                metrics = calculate_metrics(
+                    y_test, pred, task
+                )
+
+                all_results.append({
                     "Algorithm": name,
-                    "Accuracy": accuracy_score(y_test, pred),
-                    "Balanced Accuracy": balanced_accuracy_score(y_test, pred),
-                    "Precision (weighted)": precision_score(
-                        y_test, pred, average="weighted", zero_division=0
-                    ),
-                    "Recall (weighted)": recall_score(
-                        y_test, pred, average="weighted", zero_division=0
-                    ),
-                    "F1 Score (weighted)": f1_score(
-                        y_test, pred, average="weighted", zero_division=0
-                    )
+                    "Condition": condition_name,
+                    **metrics
                 })
-            else:
-                results.append({
+
+                all_predictions.append(pd.DataFrame({
+                    "Test_Row_Index": y_test.index.to_numpy(),
+                    "Actual": y_test.to_numpy(),
                     "Algorithm": name,
-                    "MAE": mean_absolute_error(y_test, pred),
-                    "RMSE": mean_squared_error(y_test, pred) ** 0.5,
-                    "R2 Score": r2_score(y_test, pred)
-                })
+                    "Condition": condition_name,
+                    "Prediction": pred
+                }))
+
+                if condition_name == "Normal":
+                    normal_predictions[name] = pred
 
         except Exception as e:
             st.warning(f"{name} failed: {e}")
@@ -285,59 +440,204 @@ if run:
 
     status.empty()
 
-    if not results:
-        st.error("No models trained successfully. Check your target and dataset.")
+    if not all_results:
+        st.error("No models trained successfully.")
         st.stop()
 
-    result_df = pd.DataFrame(results)
+    result_df = pd.DataFrame(all_results)
+    detailed_predictions = pd.concat(
+        all_predictions,
+        ignore_index=True
+    )
 
-    st.subheader("3. Model comparison")
+    # ======================== RESULTS TABLE ========================
+
+    st.subheader("4. Model Comparison — All Conditions")
     st.dataframe(result_df, use_container_width=True)
+
+    # ======================== COMPARISON GRAPH ========================
+
+    st.subheader("5. Performance Comparison Graph")
 
     if task == "classification":
         chart_metric = "Accuracy"
-        chart_data = result_df.set_index("Algorithm")[chart_metric] * 100
+        plot_multiplier = 100
         ylabel = "Accuracy (%)"
     else:
         chart_metric = "RMSE"
-        chart_data = result_df.set_index("Algorithm")[chart_metric]
+        plot_multiplier = 1
         ylabel = "RMSE (lower is better)"
 
-    fig, ax = plt.subplots(figsize=(9, 4))
-    chart_data.plot(kind="bar", ax=ax)
+    plot_data = result_df.pivot(
+        index="Algorithm",
+        columns="Condition",
+        values=chart_metric
+    )
+
+    plot_data = plot_data * plot_multiplier
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    plot_data.plot(kind="bar", ax=ax)
+
+    ax.set_title(
+        f"{chart_metric}: Normal vs Noise vs Feature-Shift"
+    )
     ax.set_ylabel(ylabel)
     ax.set_xlabel("")
     ax.tick_params(axis="x", rotation=20)
     ax.grid(axis="y", alpha=0.25)
+    ax.legend(title="Condition")
+
     fig.tight_layout()
     st.pyplot(fig)
+
+    # Store PNG graph in memory for download
+    graph_buffer = io.BytesIO()
+    fig.savefig(
+        graph_buffer,
+        format="png",
+        dpi=200,
+        bbox_inches="tight"
+    )
+    graph_buffer.seek(0)
     plt.close(fig)
 
-    st.subheader("4. Individual predictions")
-    comparison = pd.DataFrame({
-        "Actual": y_test,
-    })
-    for name in predictions.columns:
-        comparison[f"{name} Prediction"] = predictions[name]
+    # ======================== CHANGE ANALYSIS ========================
 
-    st.dataframe(comparison, use_container_width=True)
+    st.subheader("6. Normal vs Noise vs Feature-Shift Analysis")
 
-    st.subheader("5. Download results")
-    st.download_button(
-        "⬇️ Download metrics CSV",
-        data=result_df.to_csv(index=False).encode("utf-8-sig"),
-        file_name="modelcheck_metrics.csv",
-        mime="text/csv"
+    metric_columns = [
+        c for c in result_df.columns
+        if c not in ["Algorithm", "Condition"]
+    ]
+
+    normal_metrics = (
+        result_df[result_df["Condition"] == "Normal"]
+        .drop(columns="Condition")
+        .set_index("Algorithm")
     )
 
-    st.download_button(
-        "⬇️ Download sample predictions CSV",
-        data=comparison.to_csv(index=True).encode("utf-8-sig"),
-        file_name="modelcheck_predictions.csv",
-        mime="text/csv"
+    change_rows = []
+
+    for condition_name in ["Noise", "Feature-Shift"]:
+
+        condition_metrics = (
+            result_df[result_df["Condition"] == condition_name]
+            .drop(columns="Condition")
+            .set_index("Algorithm")
+        )
+
+        for algorithm in condition_metrics.index:
+
+            for metric in metric_columns:
+
+                normal_value = normal_metrics.loc[
+                    algorithm, metric
+                ]
+
+                condition_value = condition_metrics.loc[
+                    algorithm, metric
+                ]
+
+                change_rows.append({
+                    "Algorithm": algorithm,
+                    "Condition": condition_name,
+                    "Metric": metric,
+                    "Normal Score": normal_value,
+                    "Condition Score": condition_value,
+                    "Change (Condition - Normal)": (
+                        condition_value - normal_value
+                    )
+                })
+
+    change_df = pd.DataFrame(change_rows)
+
+    st.dataframe(change_df, use_container_width=True)
+
+    st.caption(
+        "For Accuracy, F1, Precision, Recall and R², a negative change "
+        "usually indicates worse performance. For MAE and RMSE, a "
+        "positive change usually indicates worse performance."
+    )
+
+    # ======================== INDIVIDUAL PREDICTIONS ========================
+
+    st.subheader("7. Individual Predictions")
+
+    normal_comparison = pd.DataFrame({
+        "Actual": y_test
+    })
+
+    for name in normal_predictions.columns:
+        normal_comparison[f"{name} Prediction"] = normal_predictions[name]
+
+    st.write("Normal test condition:")
+    st.dataframe(normal_comparison, use_container_width=True)
+
+    st.write("Detailed predictions for every algorithm and condition:")
+    st.dataframe(detailed_predictions, use_container_width=True)
+
+    # ======================== DOWNLOAD OPTIONS ========================
+
+    st.subheader("8. Download Results")
+
+    d1, d2 = st.columns(2)
+
+    with d1:
+        st.download_button(
+            "⬇️ Download Metrics CSV",
+            data=csv_bytes(result_df),
+            file_name="modelcheck_metrics_all_conditions.csv",
+            mime="text/csv"
+        )
+
+        st.download_button(
+            "⬇️ Download Normal Predictions CSV",
+            data=csv_bytes(normal_comparison, index=True),
+            file_name="modelcheck_normal_predictions.csv",
+            mime="text/csv"
+        )
+
+        st.download_button(
+            "⬇️ Download Comparison CSV",
+            data=csv_bytes(change_df),
+            file_name="modelcheck_condition_comparison.csv",
+            mime="text/csv"
+        )
+
+    with d2:
+        st.download_button(
+            "⬇️ Download All Predictions CSV",
+            data=csv_bytes(detailed_predictions),
+            file_name="modelcheck_predictions_all_conditions.csv",
+            mime="text/csv"
+        )
+
+        st.download_button(
+            "⬇️ Download Comparison Graph PNG",
+            data=graph_buffer.getvalue(),
+            file_name="modelcheck_comparison_graph.png",
+            mime="image/png"
+        )
+
+    # ======================== INTERPRETATION ========================
+
+    st.subheader("9. Experiment Notes")
+
+    st.write(
+        "**Normal:** The original test features are used. "
+        "**Noise:** Random Gaussian noise is added to numeric input features. "
+        "**Feature-Shift:** One selected numeric feature is shifted by a "
+        "multiple of its standard deviation calculated from training data."
     )
 
     st.caption(
-        "Models are trained on the uploaded dataset using a fixed random split. "
-        "Results depend on the dataset, selected target and split."
+        "All conditions use the same held-out test rows and the same fitted "
+        "models. The target values are not changed. These are test performance "
+        "results, not validation scores. One reproducible noise realization is "
+        "used; repeated runs with multiple seeds are recommended for stronger "
+        "research conclusions."
     )
+'''
+
+print("Complete code provided above.")
