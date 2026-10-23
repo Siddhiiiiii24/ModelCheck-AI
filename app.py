@@ -211,28 +211,38 @@ else:
 
 
 # Fully automatic task detection
+
 if (
     pd.api.types.is_object_dtype(y)
     or isinstance(y.dtype, pd.CategoricalDtype)
     or pd.api.types.is_bool_dtype(y)
 ):
     task_type = "Classification"
+
 else:
     unique_count = y.nunique(dropna=True)
     total_count = len(y)
 
-    if unique_count <= 10:
+    # Binary numeric labels: 0/1
+    unique_values = set(y.dropna().unique())
+
+    if unique_count <= 2 and unique_values.issubset({0, 1}):
         task_type = "Classification"
+
+    elif (
+        pd.api.types.is_integer_dtype(y)
+        and unique_count <= 10
+        and unique_count / max(total_count, 1) < 0.05
+    ):
+        task_type = "Classification"
+
     else:
         task_type = "Regression"
 
-st.success(f"Automatically detected task: {task_type}")
+st.success(f"Detected task: {task_type}")
 
 if task_type == "Classification":
     y = y.astype(str)
-
-st.success(f"Detected task: {task_type}")
-
 if task_type == "Classification" and y.nunique() < 2:
     st.error("Classification needs at least two different target classes.")
     st.stop()
