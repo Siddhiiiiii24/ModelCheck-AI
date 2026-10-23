@@ -392,51 +392,46 @@ else:
 
 # ---------------------------------------------------------
 # 5. CREATE PERTURBED TEST SETS
+
+# ---------------------------------------------------------
+# 5. CREATE PERTURBED TEST SETS
 # ---------------------------------------------------------
 
-# Normal condition: untouched test set.
 X_normal = X_test.copy()
 
-# Noise condition.
-# FIX: explicitly use float arrays before adding decimal noise.
-# This avoids Pandas LossySetitemError / invalid integer dtype assignment.
+# Noise condition: safely convert numeric columns to float.
 X_noise = X_test.copy()
 noise_rng = np.random.default_rng(int(random_seed))
 
 for col in numeric_cols:
     values = pd.to_numeric(
-        X_noise[col],
-        errors="coerce",
-    ).to_numpy(dtype=np.float64, na_value=np.nan)
+        X_noise[col], errors="coerce"
+    ).astype("float64").to_numpy(copy=True)
 
     train_values = pd.to_numeric(
-        X_train[col],
-        errors="coerce",
-    ).to_numpy(dtype=np.float64, na_value=np.nan)
+        X_train[col], errors="coerce"
+    ).astype("float64").to_numpy()
 
     finite_train = train_values[np.isfinite(train_values)]
 
-    if finite_train.size > 1:
-        scale = float(np.std(finite_train, ddof=1))
-    else:
-        scale = 0.0
+    scale = (
+        float(np.std(finite_train, ddof=1))
+        if finite_train.size > 1
+        else 0.0
+    )
 
     if not np.isfinite(scale) or scale < 0:
         scale = 0.0
 
-    generated_noise = noise_rng.normal(
+    noise = noise_rng.normal(
         loc=0.0,
         scale=float(noise_strength) * scale,
         size=len(values),
     )
 
     valid_values = np.isfinite(values)
-    values[valid_values] = (
-        values[valid_values] + generated_noise[valid_values]
-    )
+    values[valid_values] += noise[valid_values]
 
-    # Assign a float Series back to the whole column, not a decimal array
-    # into an integer-typed subset of the original column.
     X_noise[col] = pd.Series(
         values,
         index=X_noise.index,
@@ -448,31 +443,27 @@ X_shift = X_test.copy()
 
 if feature_to_shift is not None:
     shift_values = pd.to_numeric(
-        X_shift[feature_to_shift],
-        errors="coerce",
-    ).to_numpy(dtype=np.float64, na_value=np.nan)
+        X_shift[feature_to_shift], errors="coerce"
+    ).astype("float64").to_numpy(copy=True)
 
-    train_shift_values = pd.to_numeric(
-        X_train[feature_to_shift],
-        errors="coerce",
-    ).to_numpy(dtype=np.float64, na_value=np.nan)
+    train_shift = pd.to_numeric(
+        X_train[feature_to_shift], errors="coerce"
+    ).astype("float64").to_numpy()
 
-    finite_train_shift = train_shift_values[
-        np.isfinite(train_shift_values)
-    ]
+    finite_shift = train_shift[np.isfinite(train_shift)]
 
-    if finite_train_shift.size > 1:
-        shift_scale = float(np.std(finite_train_shift, ddof=1))
-    else:
-        shift_scale = 0.0
+    shift_scale = (
+        float(np.std(finite_shift, ddof=1))
+        if finite_shift.size > 1
+        else 0.0
+    )
 
     if not np.isfinite(shift_scale) or shift_scale < 0:
         shift_scale = 0.0
 
     valid_shift = np.isfinite(shift_values)
-    shift_values[valid_shift] = (
-        shift_values[valid_shift]
-        + float(feature_shift_strength) * shift_scale
+    shift_values[valid_shift] += (
+        float(feature_shift_strength) * shift_scale
     )
 
     X_shift[feature_to_shift] = pd.Series(
@@ -481,16 +472,17 @@ if feature_to_shift is not None:
         dtype="float64",
     )
 
-# Keep the feature order identical for every condition.
-X_normal = X_normal[feature_order]
-X_noise = X_noise[feature_order]
-X_shift = X_shift[feature_order]
+# Keep feature columns in the same order.
+X_normal = X_normal[feature_order].copy()
+X_noise = X_noise[feature_order].copy()
+X_shift = X_shift[feature_order].copy()
 
 test_conditions = {
     "Normal": X_normal,
     "Noise": X_noise,
     "Feature-Shift": X_shift,
 }
+
 
 
 # ---------------------------------------------------------
