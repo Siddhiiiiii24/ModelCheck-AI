@@ -361,10 +361,29 @@ if run:
                 size=len(X_noise)
             )
 
-            X_noise.loc[valid, col] = (
-                X_noise.loc[valid, col].astype(float)
-                + noise[valid.to_numpy()]
-            )
+          
+X_noise = X_test.copy()
+rng = np.random.default_rng(42)
+
+for col in numeric_cols:
+    # Convert the column to float before adding decimal noise
+    values = pd.to_numeric(X_noise[col], errors="coerce").astype("float64")
+    valid = values.notna()
+
+    scale = float(X_train[col].std())
+    if not np.isfinite(scale) or scale == 0:
+        scale = 0.0
+
+    noise = rng.normal(
+        loc=0.0,
+        scale=noise_strength * scale,
+        size=len(X_noise)
+    )
+
+    X_noise[col] = values
+    X_noise.loc[valid, col] = (
+        values.loc[valid].to_numpy() + noise[valid.to_numpy()]
+    )
 
     # Shift one selected numeric feature
     if shift_feature is not None and shift_strength > 0:
